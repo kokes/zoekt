@@ -10,11 +10,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/go-cmp/cmp"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/sourcegraph/zoekt"
 	"github.com/sourcegraph/zoekt/index"
@@ -91,10 +93,8 @@ func TestRanking(t *testing.T) {
 		indexDir = t.TempDir()
 	}
 
-	for _, u := range archiveURLs {
-		if err := indexURL(indexDir, u); err != nil {
-			t.Fatal(err)
-		}
+	if err := indexURLs(indexDir, archiveURLs); err != nil {
+		t.Fatal(err)
 	}
 
 	ss, err := search.NewDirectorySearcher(indexDir)
@@ -212,6 +212,24 @@ var (
 	tarballCache = "/tmp/zoekt-test-ranking-tarballs-" + os.Getenv("USER")
 	shardCache   = "/tmp/zoekt-test-ranking-shards-" + os.Getenv("USER")
 )
+
+// indexURLs indexes each archive into indexDir concurrently. Repos write
+// disjoint shard filenames, so parallel builders are safe to share indexDir.
+func indexURLs(indexDir string, urls []string) error {
+	limit := min(runtime.NumCPU(), len(urls))
+	if limit < 1 {
+		limit = 1
+	}
+
+	g := new(errgroup.Group)
+	g.SetLimit(limit)
+	for _, u := range urls {
+		g.Go(func() error {
+			return indexURL(indexDir, u)
+		})
+	}
+	return g.Wait()
+}
 
 func indexURL(indexDir, u string) error {
 	if err := os.MkdirAll(tarballCache, 0o700); err != nil {
